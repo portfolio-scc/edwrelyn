@@ -1,5 +1,6 @@
 import { getAnalytics } from 'firebase/analytics'
 import { getApps, initializeApp } from 'firebase/app'
+import { getAuth } from 'firebase/auth'
 import { getFirestore } from 'firebase/firestore'
 
 const firebaseConfig = {
@@ -15,6 +16,7 @@ const firebaseConfig = {
 // Initialize Firebase
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0]
 const db = getFirestore(app)
+const auth = getAuth(app)
 
 // Initialize Analytics only on client side
 let analytics
@@ -22,5 +24,5 @@ if (typeof window !== 'undefined') {
   analytics = getAnalytics(app)
 }
 
-export { analytics, db }
+export { analytics, auth, db }
 

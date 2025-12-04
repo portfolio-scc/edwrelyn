@@ -1,5 +1,7 @@
 'use client'
 
+import { AuthModal, useAuth } from '@/components/AuthModal'
+import { ConfirmModal } from '@/components/ConfirmModal'
 import { db } from '@/lib/firebase'
 import {
     addDoc,
@@ -18,6 +20,7 @@ interface Comment {
   id: string
   postId: string
   author: string
+  authorId: string
   content: string
   date: string
 }
@@ -28,6 +31,8 @@ interface BlogPost {
   content: string
   date: string
   createdAt?: any
+  authorId?: string
+  authorEmail?: string
   comments?: Comment[]
 }
 
@@ -36,9 +41,19 @@ const Blog = () => {
   const [isCreating, setIsCreating] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [formData, setFormData] = useState({ title: '', content: '' })
-  const [commentFormData, setCommentFormData] = useState<{ [key: string]: { author: string; content: string } }>({})
+  const [commentFormData, setCommentFormData] = useState<{ [key: string]: { content: string } }>({})
   const [showComments, setShowComments] = useState<{ [key: string]: boolean }>({})
   const [loading, setLoading] = useState(true)
+  const [showAuthModal, setShowAuthModal] = useState(false)
+  const [authAction, setAuthAction] = useState<'post' | 'comment' | null>(null)
+  const [pendingCommentPostId, setPendingCommentPostId] = useState<string | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState<{
+    isOpen: boolean
+    type: 'post' | 'comment'
+    postId?: string
+    commentId?: string
+  }>({ isOpen: false, type: 'post' })
+  const { user } = useAuth()
 
   useEffect(() => {
     // Real-time listener for posts
@@ -61,6 +76,12 @@ const Blog = () => {
   }, [])
 
   const handleCreate = async () => {
+    if (!user) {
+      setAuthAction('post')
+      setShowAuthModal(true)
+      return
+    }
+
     if (!formData.title || !formData.content) return
 
     try {
@@ -68,6 +89,8 @@ const Blog = () => {
         title: formData.title,
         content: formData.content,
         createdAt: serverTimestamp(),
+        authorId: user.uid,
+        authorEmail: user.email,
         comments: []
       })
       setFormData({ title: '', content: '' })
@@ -79,6 +102,10 @@ const Blog = () => {
   }
 
   const handleEdit = (post: BlogPost) => {
+    if (!user || post.authorId !== user.uid) {
+      alert('You can only edit your own posts!')
+      return
+    }
     setEditingId(post.id)
     setFormData({ title: post.title, content: post.content })
   }
@@ -100,14 +127,24 @@ const Blog = () => {
     }
   }
 
-  const handleDelete = async (id: string) => {
-    if (confirm('Are you sure you want to delete this post?')) {
-      try {
-        await deleteDoc(doc(db, 'posts', id))
-      } catch (error) {
-        console.error('Error deleting post:', error)
-        alert('Failed to delete post')
-      }
+  const handleDelete = (id: string) => {
+    const post = posts.find(p => p.id === id)
+    if (!user || post?.authorId !== user.uid) {
+      alert('You can only delete your own posts!')
+      return
+    }
+    setConfirmDelete({ isOpen: true, type: 'post', postId: id })
+  }
+
+  const confirmDeletePost = async () => {
+    if (!confirmDelete.postId) return
+    
+    try {
+      await deleteDoc(doc(db, 'posts', confirmDelete.postId))
+      setConfirmDelete({ isOpen: false, type: 'post' })
+    } catch (error) {
+      console.error('Error deleting post:', error)
+      alert('Failed to delete post')
     }
   }
 
@@ -118,13 +155,21 @@ const Blog = () => {
   }
 
   const handleAddComment = async (postId: string) => {
+    if (!user) {
+      setAuthAction('comment')
+      setPendingCommentPostId(postId)
+      setShowAuthModal(true)
+      return
+    }
+
     const commentData = commentFormData[postId]
-    if (!commentData?.author || !commentData?.content) return
+    if (!commentData?.content) return
 
     const newComment: Comment = {
       id: Date.now().toString(),
       postId,
-      author: commentData.author,
+      author: user.email || 'Anonymous',
+      authorId: user.uid,
       content: commentData.content,
       date: new Date().toLocaleDateString('en-US', { 
         year: 'numeric', 
@@ -141,25 +186,38 @@ const Blog = () => {
       await updateDoc(postRef, {
         comments: [...(post?.comments || []), newComment]
       })
-      setCommentFormData({ ...commentFormData, [postId]: { author: '', content: '' } })
+      setCommentFormData({ ...commentFormData, [postId]: { content: '' } })
     } catch (error) {
       console.error('Error adding comment:', error)
       alert('Failed to add comment')
     }
   }
 
-  const handleDeleteComment = async (postId: string, commentId: string) => {
-    if (confirm('Delete this comment?')) {
-      try {
-        const post = posts.find(p => p.id === postId)
-        const postRef = doc(db, 'posts', postId)
-        await updateDoc(postRef, {
-          comments: (post?.comments || []).filter(c => c.id !== commentId)
-        })
-      } catch (error) {
-        console.error('Error deleting comment:', error)
-        alert('Failed to delete comment')
-      }
+  const handleDeleteComment = (postId: string, commentId: string) => {
+    const post = posts.find(p => p.id === postId)
+    const comment = post?.comments?.find(c => c.id === commentId)
+    
+    if (!user || comment?.authorId !== user.uid) {
+      alert('You can only delete your own comments!')
+      return
+    }
+
+    setConfirmDelete({ isOpen: true, type: 'comment', postId, commentId })
+  }
+
+  const confirmDeleteComment = async () => {
+    if (!confirmDelete.postId || !confirmDelete.commentId) return
+    
+    try {
+      const post = posts.find(p => p.id === confirmDelete.postId)
+      const postRef = doc(db, 'posts', confirmDelete.postId)
+      await updateDoc(postRef, {
+        comments: (post?.comments || []).filter(c => c.id !== confirmDelete.commentId)
+      })
+      setConfirmDelete({ isOpen: false, type: 'comment' })
+    } catch (error) {
+      console.error('Error deleting comment:', error)
+      alert('Failed to delete comment')
     }
   }
 
@@ -239,22 +297,32 @@ const Blog = () => {
               <div className="flex justify-between items-start mb-3">
                 <div>
                   <h2 className="text-2xl font-bold mb-2">{post.title}</h2>
-                  <p className="text-sm text-neutral-500">{post.date}</p>
+                  <div className="flex items-center gap-2 text-sm text-neutral-500">
+                    <span>{post.date}</span>
+                    {post.authorEmail && (
+                      <>
+                        <span>•</span>
+                        <span>by {post.authorEmail}</span>
+                      </>
+                    )}
+                  </div>
                 </div>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => handleEdit(post)}
-                    className="text-sm px-4 py-1 border border-neutral-300 hover:border-black transition-colors"
-                  >
-                    Edit
-                  </button>
-                  <button
-                    onClick={() => handleDelete(post.id)}
-                    className="text-sm px-4 py-1 border border-red-500 text-red-500 hover:bg-red-500 hover:text-white transition-colors"
-                  >
-                    Delete
-                  </button>
-                </div>
+                {user && post.authorId === user.uid && (
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => handleEdit(post)}
+                      className="text-sm px-4 py-1 border border-neutral-300 hover:border-black transition-colors"
+                    >
+                      Edit
+                    </button>
+                    <button
+                      onClick={() => handleDelete(post.id)}
+                      className="text-sm px-4 py-1 border border-red-500 text-red-500 hover:bg-red-500 hover:text-white transition-colors"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                )}
               </div>
               <p className="text-neutral-700 whitespace-pre-wrap mb-6">{post.content}</p>
 
@@ -279,12 +347,14 @@ const Blog = () => {
                                 <p className="font-semibold text-sm">{comment.author}</p>
                                 <p className="text-xs text-neutral-500">{comment.date}</p>
                               </div>
-                              <button
-                                onClick={() => handleDeleteComment(post.id, comment.id)}
-                                className="text-xs text-red-500 hover:text-red-700"
-                              >
-                                Delete
-                              </button>
+                              {user && comment.authorId === user.uid && (
+                                <button
+                                  onClick={() => handleDeleteComment(post.id, comment.id)}
+                                  className="text-xs text-red-500 hover:text-red-700"
+                                >
+                                  Delete
+                                </button>
+                              )}
                             </div>
                             <p className="text-sm text-neutral-700">{comment.content}</p>
                           </div>
@@ -294,36 +364,26 @@ const Blog = () => {
 
                     {/* Add Comment Form */}
                     <div className="bg-white border border-neutral-200 p-4">
-                      <h4 className="font-semibold mb-3 text-sm">Add a Comment</h4>
+                      <h4 className="font-semibold mb-3 text-sm">
+                        {user ? `Commenting as ${user.email}` : 'Login to comment'}
+                      </h4>
                       <div className="space-y-3">
-                        <input
-                          type="text"
-                          placeholder="Your name"
-                          value={commentFormData[post.id]?.author || ''}
-                          onChange={(e) => setCommentFormData({
-                            ...commentFormData,
-                            [post.id]: { 
-                              ...commentFormData[post.id], 
-                              author: e.target.value 
-                            }
-                          })}
-                          className="w-full border border-neutral-300 px-3 py-2 text-sm focus:outline-none focus:border-black"
-                        />
                         <textarea
-                          placeholder="Write your comment..."
+                          placeholder={user ? "Write your comment..." : "Please login to comment"}
                           value={commentFormData[post.id]?.content || ''}
                           onChange={(e) => setCommentFormData({
                             ...commentFormData,
                             [post.id]: { 
-                              ...commentFormData[post.id], 
                               content: e.target.value 
                             }
                           })}
-                          className="w-full border border-neutral-300 px-3 py-2 text-sm focus:outline-none focus:border-black h-20"
+                          disabled={!user}
+                          className="w-full border border-neutral-300 px-3 py-2 text-sm focus:outline-none focus:border-black h-20 disabled:bg-neutral-100"
                         />
                         <button
                           onClick={() => handleAddComment(post.id)}
-                          className="px-4 py-2 bg-black text-white hover:bg-neutral-800 transition-colors text-sm"
+                          className="px-4 py-2 bg-black text-white hover:bg-neutral-800 transition-colors text-sm disabled:bg-neutral-400"
+                          disabled={!user}
                         >
                           Post Comment
                         </button>
@@ -336,6 +396,36 @@ const Blog = () => {
           ))
         )}
       </div>
+
+      {showAuthModal && (
+        <AuthModal
+          onClose={() => {
+            setShowAuthModal(false)
+            setAuthAction(null)
+            setPendingCommentPostId(null)
+          }}
+          onSuccess={() => {
+            setShowAuthModal(false)
+            if (authAction === 'comment' && pendingCommentPostId) {
+              // Comment form is already ready, user can type and submit
+            }
+            setAuthAction(null)
+            setPendingCommentPostId(null)
+          }}
+        />
+      )}
+
+      <ConfirmModal
+        isOpen={confirmDelete.isOpen}
+        title={confirmDelete.type === 'post' ? 'Delete Post' : 'Delete Comment'}
+        message={
+          confirmDelete.type === 'post'
+            ? 'Are you sure you want to delete this post? This action cannot be undone.'
+            : 'Are you sure you want to delete this comment? This action cannot be undone.'
+        }
+        onConfirm={confirmDelete.type === 'post' ? confirmDeletePost : confirmDeleteComment}
+        onCancel={() => setConfirmDelete({ isOpen: false, type: 'post' })}
+      />
     </div>
   )
 }
